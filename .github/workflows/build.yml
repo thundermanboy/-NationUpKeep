@@ -1,11 +1,6 @@
 name: Build NationUpkeep
 
-'on':
-  push:
-    branches:
-      
-main
-workflow_dispatch:
+'on': [push, workflow_dispatch]
 
 permissions:
   contents: read
@@ -13,6 +8,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       
 name: Checkout source
@@ -24,7 +20,6 @@ name: Set up Java 25
       with:
         distribution: temurin
         java-version: '25'
-        cache: maven
 
       
 name: Build plugin
