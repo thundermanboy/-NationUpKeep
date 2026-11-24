@@ -1,0 +1,19 @@
+name: NationUpkeep
+version: 0.6.2
+main: com.noah.nationupkeep.NationUpkeepPlugin
+api-version: '26.2'
+author: Server Admin
+description: Nation management, floating nation nameplates, Vault shared bank, GriefPrevention claim scanning, and monthly upkeep.
+softdepend: [GriefPrevention, Vault]
+commands:
+  nation:
+    description: Nation management commands
+    usage: /nation
+  nationadmin:
+    description: NationUpkeep administrator commands
+    usage: /nationadmin
+    permission: nationupkeep.admin
+permissions:
+  nationupkeep.admin:
+    description: Manage NationUpkeep, upkeep, and claim recovery
+    default: op
