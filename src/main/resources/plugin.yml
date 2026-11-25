@@ -9,6 +9,12 @@ commands:
   nation:
     description: Nation management commands
     usage: /nation
+  jobs:
+    description: Choose and view your NationUpkeep job
+    usage: /jobs
+  bounty:
+    description: Create, list, and cancel nation-funded player bounties
+    usage: /bounty
   nationadmin:
     description: NationUpkeep administrator commands
     usage: /nationadmin

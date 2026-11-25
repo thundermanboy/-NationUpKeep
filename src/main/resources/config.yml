@@ -20,3 +20,13 @@ nameplates:
   enabled: true
   # Available placeholder: {name}
   format: "&6&l{name}"
+
+# Built-in jobs. Rewards are paid through Vault to the player's balance.
+jobs:
+  reward-cooldown-ms: 250
+  hunter-reward-cooldown-ms: 1500
+  rewards:
+    miner: 5.0
+    farmer: 2.0
+    woodcutter: 2.0
+    hunter: 3.0

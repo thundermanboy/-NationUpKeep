@@ -27,3 +27,9 @@
 - Added automatic refresh on join, respawn, world change, membership changes, and periodic passenger recovery.
 - Added configurable nameplate enable/format settings and cleanup of plugin-owned armor stands.
 - Updated Maven and GitHub Actions artifact version to 0.6.2.
+
+## 0.7.0
+- Added one-job-at-a-time player jobs: Miner, Farmer, Woodcutter, Hunter, and Assassin.
+- Added configurable Vault payouts for mining ores, harvesting mature crops, chopping logs, and killing hostile monsters.
+- Added nation-funded player bounties with create/list/cancel commands and Assassin-only PvP claim payouts.
+- Bounties are persisted in jobs.yml; unclaimed bounty funds are held outside the nation bank and returned when cancelled.

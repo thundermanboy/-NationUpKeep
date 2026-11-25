@@ -7,6 +7,14 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Monster;
+import org.bukkit.entity.Animals;
+import org.bukkit.Material;
+import org.bukkit.block.data.Ageable;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
@@ -39,10 +47,18 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
     private boolean gpHooksReady;
     private final Map<UUID, ArmorStand> nationNameplates = new HashMap<>();
     private BukkitTask nameplateTask;
+    private final Map<UUID, String> playerJobs = new HashMap<>();
+    private final Map<UUID, Bounty> bounties = new HashMap<>();
+    private final Set<String> playerPlacedBlocks = new HashSet<>();
+    private final Map<String, Long> rewardCooldowns = new HashMap<>();
+    private org.bukkit.configuration.file.YamlConfiguration jobsData;
+    private record Bounty(UUID target, String targetName, String nation, double amount, UUID createdBy) {}
 
     @Override public void onEnable() {
         saveDefaultConfig();
+        applyConfigDefaults();
         loadData();
+        loadJobsData();
         loadSuspendedClaims();
         setupEconomy();
         registerGriefPreventionHooks();
@@ -52,6 +68,10 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
         Objects.requireNonNull(getCommand("nation")).setTabCompleter(this);
         Objects.requireNonNull(getCommand("nationadmin")).setExecutor(this);
         Objects.requireNonNull(getCommand("nationadmin")).setTabCompleter(this);
+        Objects.requireNonNull(getCommand("jobs")).setExecutor(this);
+        Objects.requireNonNull(getCommand("jobs")).setTabCompleter(this);
+        Objects.requireNonNull(getCommand("bounty")).setExecutor(this);
+        Objects.requireNonNull(getCommand("bounty")).setTabCompleter(this);
         if (nextChargeAt == 0) nextChargeAt = System.currentTimeMillis() + daysToMillis(getConfig().getLong("upkeep.first-charge-delay-days", 30));
         saveData();
         scheduleNextCharge();
@@ -61,7 +81,18 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
         getLogger().info("NationUpkeep 0.6.2 enabled. Vault economy: " + (economy != null) + "; GriefPrevention scanning: " + (Bukkit.getPluginManager().isPluginEnabled("GriefPrevention") ? "available" : "not installed"));
     }
 
-    @Override public void onDisable() { if (upkeepTask != null) upkeepTask.cancel(); if (nameplateTask != null) nameplateTask.cancel(); removeAllNationNameplates(); saveData(); saveSuspendedClaims(); }
+    @Override public void onDisable() { if (upkeepTask != null) upkeepTask.cancel(); if (nameplateTask != null) nameplateTask.cancel(); removeAllNationNameplates(); saveData(); saveJobsData(); saveSuspendedClaims(); }
+
+    private void applyConfigDefaults() {
+        getConfig().addDefault("jobs.reward-cooldown-ms", 250);
+        getConfig().addDefault("jobs.hunter-reward-cooldown-ms", 1500);
+        getConfig().addDefault("jobs.rewards.miner", 5.0);
+        getConfig().addDefault("jobs.rewards.farmer", 2.0);
+        getConfig().addDefault("jobs.rewards.woodcutter", 2.0);
+        getConfig().addDefault("jobs.rewards.hunter", 3.0);
+        getConfig().options().copyDefaults(true);
+        saveConfig();
+    }
 
     private long daysToMillis(long days) { return Math.max(1, days) * 86_400_000L; }
     private String color(String s) { return ChatColor.translateAlternateColorCodes('&', "&6[Nations] &f" + s); }
@@ -74,6 +105,8 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
 
     @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] a) {
         if (command.getName().equalsIgnoreCase("nationadmin")) return admin(sender, a);
+        if (command.getName().equalsIgnoreCase("jobs")) return jobsCommand(sender, a);
+        if (command.getName().equalsIgnoreCase("bounty")) return bountyCommand(sender, a);
         if (a.length == 0) { help(sender); return true; }
         if (playerOnly(sender)) return true;
         Player p = (Player) sender;
@@ -723,7 +756,218 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
     }
 
     private String money(double d) { return getConfig().getString("upkeep.currency-symbol", "$") + String.format(Locale.US, "%.2f", d); }
-    private void help(CommandSender s) { msg(s, "Commands: create, invite, accept, leave, info, members, bank, deposit, withdraw, promote, kick, transfer, disband, ally, enemy, neutral"); }
+
+    private void loadJobsData() {
+        File file = new File(getDataFolder(), "jobs.yml");
+        jobsData = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
+        ConfigurationSection jobs = jobsData.getConfigurationSection("players");
+        if (jobs != null) for (String id : jobs.getKeys(false)) {
+            try {
+                UUID uuid = UUID.fromString(id);
+                String job = jobs.getString(id + ".job");
+                if (job != null && Set.of("miner", "farmer", "woodcutter", "hunter", "assassin").contains(job)) playerJobs.put(uuid, job);
+            } catch (IllegalArgumentException ignored) {}
+        }
+        ConfigurationSection savedBounties = jobsData.getConfigurationSection("bounties");
+        if (savedBounties != null) for (String id : savedBounties.getKeys(false)) {
+            try {
+                UUID target = UUID.fromString(id);
+                ConfigurationSection b = savedBounties.getConfigurationSection(id);
+                UUID creator = UUID.fromString(b.getString("created-by"));
+                bounties.put(target, new Bounty(target, b.getString("target-name", "Unknown"),
+                        b.getString("nation", ""), b.getDouble("amount"), creator));
+            } catch (Exception ex) { getLogger().warning("Skipped invalid saved bounty for " + id); }
+        }
+    }
+
+    private void saveJobsData() {
+        if (jobsData == null) jobsData = new org.bukkit.configuration.file.YamlConfiguration();
+        jobsData.set("players", null);
+        for (var entry : playerJobs.entrySet()) jobsData.set("players." + entry.getKey() + ".job", entry.getValue());
+        jobsData.set("bounties", null);
+        for (Bounty bounty : bounties.values()) {
+            String path = "bounties." + bounty.target();
+            jobsData.set(path + ".target-name", bounty.targetName());
+            jobsData.set(path + ".nation", bounty.nation());
+            jobsData.set(path + ".amount", bounty.amount());
+            jobsData.set(path + ".created-by", bounty.createdBy().toString());
+        }
+        try {
+            if (!getDataFolder().exists()) getDataFolder().mkdirs();
+            jobsData.save(new File(getDataFolder(), "jobs.yml"));
+        } catch (IOException ex) { getLogger().severe("Could not save jobs.yml: " + ex.getMessage()); }
+    }
+
+    private boolean jobsCommand(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) { msg(sender, "This command can only be used in-game."); return true; }
+        if (args.length == 0 || args[0].equalsIgnoreCase("list")) {
+            msg(player, "Available jobs: &eMiner, Farmer, Woodcutter, Hunter, Assassin");
+            msg(player, "Use /jobs join <job>, /jobs leave, or /jobs stats. You may have only one job.");
+            return true;
+        }
+        switch (args[0].toLowerCase(Locale.ROOT)) {
+            case "join" -> {
+                if (args.length < 2) { msg(player, "Usage: /jobs join <miner|farmer|woodcutter|hunter|assassin>"); return true; }
+                String job = args[1].toLowerCase(Locale.ROOT);
+                if (!Set.of("miner", "farmer", "woodcutter", "hunter", "assassin").contains(job)) { msg(player, "Unknown job. Use /jobs to see the available jobs."); return true; }
+                String current = playerJobs.get(player.getUniqueId());
+                if (job.equals(current)) { msg(player, "You already have the " + job + " job."); return true; }
+                if (current != null) { msg(player, "You already have the " + current + " job. Use /jobs leave before choosing another."); return true; }
+                playerJobs.put(player.getUniqueId(), job); saveJobsData();
+                msg(player, "You joined the " + job + " job. You can only have one job at a time.");
+            }
+            case "leave" -> {
+                String old = playerJobs.remove(player.getUniqueId());
+                if (old == null) msg(player, "You do not currently have a job.");
+                else { saveJobsData(); msg(player, "You left the " + old + " job."); }
+            }
+            case "stats" -> {
+                String job = playerJobs.get(player.getUniqueId());
+                msg(player, "Your current job: &e" + (job == null ? "None" : job));
+                if ("assassin".equals(job)) msg(player, "Complete player bounties to earn money. Use /bounty list.");
+                else if (job != null) msg(player, "Earn money by performing your job. Rewards are configurable in config.yml.");
+            }
+            default -> msg(player, "Use /jobs, /jobs join <job>, /jobs leave, or /jobs stats.");
+        }
+        return true;
+    }
+
+    private boolean bountyCommand(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player player)) { msg(sender, "This command can only be used in-game."); return true; }
+        if (args.length == 0 || args[0].equalsIgnoreCase("list")) {
+            if (bounties.isEmpty()) msg(player, "There are currently no active bounties.");
+            else {
+                msg(player, "Active player bounties:");
+                for (Bounty b : bounties.values()) msg(player, "&e" + b.targetName() + " &7- &a" + money(b.amount()) + " &7(placed by " + b.nation() + ")");
+            }
+            return true;
+        }
+        switch (args[0].toLowerCase(Locale.ROOT)) {
+            case "create" -> {
+                if (args.length < 3) { msg(player, "Usage: /bounty create <online-player> <amount>"); return true; }
+                Nation nation = nationOf(player.getUniqueId());
+                if (nation == null) { msg(player, "You must belong to a nation to place a bounty."); return true; }
+                if (!rank(nation, player.getUniqueId(), "OWNER", "CO_OWNER", "ADMIN", "OFFICER")) { msg(player, "Only nation leaders and officers can place bounties."); return true; }
+                Player target = Bukkit.getPlayerExact(args[1]);
+                if (target == null) { msg(player, "The bounty target must be online when the bounty is created."); return true; }
+                if (target.getUniqueId().equals(player.getUniqueId())) { msg(player, "You cannot place a bounty on yourself."); return true; }
+                Nation targetNation = nationOf(target.getUniqueId());
+                if (targetNation != null && targetNation.name().equalsIgnoreCase(nation.name())) { msg(player, "Your nation cannot place a bounty on one of its own members."); return true; }
+                if (bounties.containsKey(target.getUniqueId())) { msg(player, "That player already has an active bounty."); return true; }
+                double amount;
+                try { amount = Double.parseDouble(args[2]); } catch (NumberFormatException ex) { msg(player, "Enter a valid amount."); return true; }
+                if (!Double.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) { msg(player, "Bounty must be greater than zero and no more than 1,000,000,000."); return true; }
+                if (nation.bank() + 0.000001 < amount) { msg(player, "Your nation bank does not have enough money."); return true; }
+                nation.bank(nation.bank() - amount);
+                Bounty bounty = new Bounty(target.getUniqueId(), target.getName(), nation.name(), amount, player.getUniqueId());
+                bounties.put(target.getUniqueId(), bounty); saveData(); saveJobsData();
+                broadcast(nation, player.getName() + " placed a " + money(amount) + " bounty on " + target.getName() + ".");
+                msg(target, "A bounty of " + money(amount) + " has been placed on you by nation " + nation.name() + "!");
+            }
+            case "cancel" -> {
+                if (args.length < 2) { msg(player, "Usage: /bounty cancel <player>"); return true; }
+                Player target = Bukkit.getPlayerExact(args[1]);
+                Bounty bounty = target == null ? bounties.values().stream().filter(b -> b.targetName().equalsIgnoreCase(args[1])).findFirst().orElse(null) : bounties.get(target.getUniqueId());
+                if (bounty == null) { msg(player, "No active bounty found for that player."); return true; }
+                Nation nation = nations.get(bounty.nation());
+                if (nation == null || !nation.has(player.getUniqueId()) || !rank(nation, player.getUniqueId(), "OWNER", "CO_OWNER", "ADMIN", "OFFICER")) { msg(player, "Only an officer of the nation that placed this bounty can cancel it."); return true; }
+                bounties.remove(bounty.target());
+                nation.bank(nation.bank() + bounty.amount());
+                saveData(); saveJobsData();
+                msg(player, "Bounty cancelled. " + money(bounty.amount()) + " was returned to " + nation.name() + "'s bank.");
+            }
+            default -> msg(player, "Use /bounty list, /bounty create <online-player> <amount>, or /bounty cancel <player>.");
+        }
+        return true;
+    }
+
+    @EventHandler
+    public void onPlayerPlaceBlock(BlockPlaceEvent event) {
+        playerPlacedBlocks.add(blockKey(event.getBlockPlaced()));
+    }
+
+    @EventHandler
+    public void onJobBlockBreak(BlockBreakEvent event) {
+        Player player = event.getPlayer();
+        String job = playerJobs.get(player.getUniqueId());
+        if (job == null || economy == null) return;
+        String key = blockKey(event.getBlock());
+        if (playerPlacedBlocks.remove(key)) return;
+        Material type = event.getBlock().getType();
+        String rewardPath = null;
+        if (job.equals("miner") && isOre(type)) rewardPath = "jobs.rewards.miner";
+        if (job.equals("woodcutter") && isLog(type)) rewardPath = "jobs.rewards.woodcutter";
+        if (job.equals("farmer") && isMatureCrop(event.getBlock().getBlockData())) rewardPath = "jobs.rewards.farmer";
+        if (rewardPath == null) return;
+        String cooldownKey = player.getUniqueId() + ":" + job;
+        long now = System.currentTimeMillis();
+        long cooldown = getConfig().getLong("jobs.reward-cooldown-ms", 250);
+        if (now - rewardCooldowns.getOrDefault(cooldownKey, 0L) < cooldown) return;
+        rewardCooldowns.put(cooldownKey, now);
+        double reward = getConfig().getDouble(rewardPath, 1.0);
+        payJobReward(player, reward, job);
+    }
+
+    @EventHandler
+    public void onJobMobKill(EntityDeathEvent event) {
+        if (!(event.getEntity().getKiller() instanceof Player killer)) return;
+        if (!(event.getEntity() instanceof Monster)) return;
+        if (!"hunter".equals(playerJobs.get(killer.getUniqueId()))) return;
+        if (economy == null) return;
+        String cooldownKey = killer.getUniqueId() + ":hunter";
+        long now = System.currentTimeMillis();
+        long cooldown = getConfig().getLong("jobs.hunter-reward-cooldown-ms", 1500);
+        if (now - rewardCooldowns.getOrDefault(cooldownKey, 0L) < cooldown) return;
+        rewardCooldowns.put(cooldownKey, now);
+        payJobReward(killer, getConfig().getDouble("jobs.rewards.hunter", 3.0), "hunter");
+    }
+
+    @EventHandler
+    public void onBountyKill(PlayerDeathEvent event) {
+        Player target = event.getEntity();
+        Player killer = target.getKiller();
+        if (killer == null || killer.getUniqueId().equals(target.getUniqueId())) return;
+        if (!"assassin".equals(playerJobs.get(killer.getUniqueId()))) return;
+        Bounty bounty = bounties.get(target.getUniqueId());
+        if (bounty == null || economy == null) return;
+        Nation killerNation = nationOf(killer.getUniqueId());
+        if (killerNation != null && killerNation.name().equalsIgnoreCase(bounty.nation())) return;
+        if (bounty.createdBy().equals(killer.getUniqueId())) return;
+        EconomyResponse response = economy.depositPlayer(killer, bounty.amount());
+        if (!response.transactionSuccess()) {
+            msg(killer, "Bounty payout failed. The bounty remains active; contact an administrator.");
+            getLogger().warning("Bounty payout failed for " + killer.getName() + ": " + response.errorMessage);
+            return;
+        }
+        bounties.remove(target.getUniqueId());
+        saveJobsData();
+        msg(killer, "Bounty completed! You received " + money(bounty.amount()) + " for eliminating " + target.getName() + ".");
+        Nation payingNation = nations.get(bounty.nation());
+        if (payingNation != null) broadcast(payingNation, "The bounty on " + target.getName() + " was claimed by " + killer.getName() + ".");
+    }
+
+    private void payJobReward(Player player, double amount, String job) {
+        if (!Double.isFinite(amount) || amount <= 0 || economy == null) return;
+        EconomyResponse response = economy.depositPlayer(player, amount);
+        if (response.transactionSuccess()) msg(player, "Job reward: +" + money(amount) + " (" + job + ").");
+    }
+
+    private boolean isOre(Material m) {
+        String name = m.name();
+        return name.endsWith("_ORE") || m == Material.ANCIENT_DEBRIS;
+    }
+    private boolean isLog(Material m) {
+        String name = m.name();
+        return name.endsWith("_LOG") || name.endsWith("_WOOD") || name.equals("CRIMSON_STEM") || name.equals("WARPED_STEM") || name.equals("STRIPPED_CRIMSON_STEM") || name.equals("STRIPPED_WARPED_STEM");
+    }
+    private boolean isMatureCrop(org.bukkit.block.data.BlockData data) {
+        return data instanceof Ageable ageable && ageable.getAge() >= ageable.getMaximumAge();
+    }
+    private String blockKey(org.bukkit.block.Block block) {
+        return block.getWorld().getName() + ":" + block.getX() + ":" + block.getY() + ":" + block.getZ();
+    }
+
+    private void help(CommandSender s) { msg(s, "Commands: create, invite, accept, leave, info, members, bank, deposit, withdraw, promote, kick, transfer, disband, ally, enemy, neutral. Also: /jobs and /bounty"); }
 
     private void loadData() {
         File file = new File(getDataFolder(), "nations.yml");
@@ -757,7 +1001,12 @@ public final class NationUpkeepPlugin extends JavaPlugin implements CommandExecu
     }
 
     @Override public List<String> onTabComplete(CommandSender s, Command c, String alias, String[] args) {
-        if (args.length == 1) return c.getName().equalsIgnoreCase("nation") ? List.of("create", "invite", "accept", "leave", "info", "members", "bank", "deposit", "withdraw", "promote", "kick", "transfer", "disband", "ally", "enemy", "neutral") : List.of("scanclaims", "blocks", "charge", "restoreclaims", "status", "reload");
+        if (args.length == 1) {
+            if (c.getName().equalsIgnoreCase("nation")) return List.of("create", "invite", "accept", "leave", "info", "members", "bank", "deposit", "withdraw", "promote", "kick", "transfer", "disband", "ally", "enemy", "neutral");
+            if (c.getName().equalsIgnoreCase("jobs")) return List.of("list", "join", "leave", "stats");
+            if (c.getName().equalsIgnoreCase("bounty")) return List.of("list", "create", "cancel");
+            return List.of("scanclaims", "blocks", "charge", "restoreclaims", "status", "reload");
+        }
         if (args.length == 2 && c.getName().equalsIgnoreCase("nation") && Set.of("kick", "promote", "transfer").contains(args[0].toLowerCase(Locale.ROOT)) && s instanceof Player player) {
             Nation nation = nationOf(player.getUniqueId());
             if (nation == null) return Collections.emptyList();

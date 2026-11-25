@@ -56,3 +56,13 @@ If automatic claim scanning is enabled (default), upkeep aborts without charging
 Online nation members receive a small floating nation label above their player username. The label is implemented as an invisible marker armor-stand passenger and is refreshed periodically and after join, respawn, and world changes. It displays the nation name only (no rank). Configure `nameplates.enabled` and `nameplates.format` in `config.yml`; `{name}` is replaced with the nation name. The default format is gold and bold.
 
 Note: client/server behavior for passenger-based labels should be verified on the exact Spigot 26.2 build before production use. Some server plugins that manipulate player passengers or entity visibility may conflict.
+
+## 0.7.0 Jobs and bounties
+- `/jobs` lists jobs; `/jobs join <miner|farmer|woodcutter|hunter|assassin>` selects one job; `/jobs leave` clears it; `/jobs stats` shows the current job. Only one job can be active per player.
+- Miner earns for breaking ores, Farmer for harvesting mature ageable crops, Woodcutter for breaking logs/wood, and Hunter for killing hostile monsters. Rewards are paid through Vault.
+- Configure rewards under `jobs.rewards` in `config.yml`.
+- `/bounty create <online-player> <amount>` places a bounty funded from the nation's shared bank. Nation Owner/Co-Owner/Admin/Officer can create/cancel bounties.
+- `/bounty list` shows active bounties. `/bounty cancel <player>` cancels a bounty and refunds its funds to the placing nation's bank.
+- Only a player with the Assassin job can claim a bounty by killing its target in PvP. Self-bounties, same-nation targets, the bounty creator claiming their own bounty, and killers from the paying nation are blocked.
+- Bounty records and job selections persist in `plugins/NationUpkeep/jobs.yml`.
+- Anti-abuse note: blocks placed during the current server session do not pay job rewards when broken; the placed-block cache is not persisted across restarts. Minecraft cannot reliably identify alternate accounts without a separate account-linking/anti-cheat system.
