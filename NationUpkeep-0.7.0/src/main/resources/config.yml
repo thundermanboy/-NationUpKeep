@@ -1,0 +1,32 @@
+# NationUpkeep 0.4.0
+upkeep:
+  enabled: true
+  # Cost per 100 claimed X/Z blocks per billing period.
+  cost-per-100-blocks: 1.0
+  # First run after this many days, then repeats every 30 days.
+  first-charge-delay-days: 30
+  charge-interval-days: 30
+  currency-symbol: '$'
+claims:
+  # If true, upkeep will NOT run unless GriefPrevention is installed and scanning succeeds.
+  # This prevents charging nations using stale land totals.
+  auto-scan-before-upkeep: true
+  # Unpaid claims are temporarily made publicly accessible. Original permissions are
+  # saved to suspended-claims.yml and restored when the nation pays.
+  suspend-protection-when-unpaid: true
+
+# A small floating nation label above each member's username.
+nameplates:
+  enabled: true
+  # Available placeholder: {name}
+  format: "&6&l{name}"
+
+# Built-in jobs. Rewards are paid through Vault to the player's balance.
+jobs:
+  reward-cooldown-ms: 250
+  hunter-reward-cooldown-ms: 1500
+  rewards:
+    miner: 5.0
+    farmer: 2.0
+    woodcutter: 2.0
+    hunter: 3.0
